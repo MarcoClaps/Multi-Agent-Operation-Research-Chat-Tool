@@ -6,7 +6,13 @@ from Agents.AG_instance_gen import instance_generator_agent
 from Agents.AG_vrptw_solver import vrptw_solver_agent
 from Agents.AG_code_editor import code_editor_agent
 from Agents.AG_visualization import visualization_agent
-from Agents.shared_context import get_context, ORContext
+from Agents.shared_context import (
+    get_context, 
+    ORContext,
+    ORContextManager,
+    set_current_user,
+    get_current_user,
+)
 from Agents.guardrails import (
     topic_guardrail,
     safety_guardrail,
@@ -25,6 +31,9 @@ __all__ = [
     # Context
     "get_context",
     "ORContext",
+    "ORContextManager",
+    "set_current_user",
+    "get_current_user",
     # Guardrails
     "topic_guardrail",
     "safety_guardrail",

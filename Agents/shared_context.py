@@ -1,35 +1,35 @@
 """
 Shared Context Manager for OR Agents
-Provides a singleton context that agents can use to share state.
+Provides per-user context isolation for multi-tenant deployments.
 """
 
 from typing import Optional, Dict, Any
 import json
 from pathlib import Path
+import threading
 
 
 class ORContext:
     """
-    Singleton context manager for sharing state between OR agents.
+    Per-user context for sharing state between OR agents.
     Stores the current instance, solution, and other shared data.
+    Each user gets their own isolated context.
     """
-    _instance: Optional['ORContext'] = None
     
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
-        return cls._instance
-    
-    def __init__(self):
-        if self._initialized:
-            return
+    def __init__(self, user_id: str, base_workspace: str = ".files"):
+        """
+        Initialize a user-specific context.
         
-        self._initialized = True
+        Args:
+            user_id: Unique identifier for the user
+            base_workspace: Base directory for file storage
+        """
+        self.user_id = user_id
         self._current_instance: Optional[Dict[str, Any]] = None
         self._current_solution: Optional[Dict[str, Any]] = None
         self._history: list = []
-        self._workspace_path: Path = Path(".")
+        self._workspace_path: Path = Path(base_workspace) / user_id
+        self._workspace_path.mkdir(parents=True, exist_ok=True)
     
     def set_workspace(self, path: str):
         """Set the workspace path for file operations."""
@@ -109,7 +109,7 @@ class ORContext:
         """Get current context status."""
         status = []
         status.append("=" * 50)
-        status.append("OR Context Status")
+        status.append(f"OR Context Status (User: {self.user_id})")
         status.append("=" * 50)
         status.append(f"Workspace: {self._workspace_path}")
         status.append(f"Instance loaded: {'Yes' if self.has_instance() else 'No'}")
@@ -140,7 +140,101 @@ class ORContext:
         self._history = []
 
 
-# Singleton accessor
-def get_context() -> ORContext:
-    """Get the shared OR context instance."""
-    return ORContext()
+class ORContextManager:
+    """
+    Thread-safe manager for per-user OR contexts.
+    Handles creation, retrieval, and cleanup of user-specific contexts.
+    """
+    _contexts: Dict[str, ORContext] = {}
+    _lock = threading.Lock()
+    _base_workspace: str = ".files"
+    
+    @classmethod
+    def set_base_workspace(cls, path: str):
+        """Set the base workspace directory for all user contexts."""
+        cls._base_workspace = path
+        Path(path).mkdir(parents=True, exist_ok=True)
+    
+    @classmethod
+    def get_context(cls, user_id: str) -> ORContext:
+        """
+        Get or create a context for a specific user.
+        Thread-safe implementation.
+        
+        Args:
+            user_id: Unique identifier for the user
+            
+        Returns:
+            ORContext instance for the user
+        """
+        with cls._lock:
+            if user_id not in cls._contexts:
+                cls._contexts[user_id] = ORContext(user_id, cls._base_workspace)
+            return cls._contexts[user_id]
+    
+    @classmethod
+    def clear_context(cls, user_id: str):
+        """
+        Clear and remove a user's context.
+        
+        Args:
+            user_id: Unique identifier for the user
+        """
+        with cls._lock:
+            if user_id in cls._contexts:
+                cls._contexts[user_id].clear()
+                del cls._contexts[user_id]
+    
+    @classmethod
+    def get_active_users(cls) -> list:
+        """Get list of users with active contexts."""
+        with cls._lock:
+            return list(cls._contexts.keys())
+    
+    @classmethod
+    def cleanup_all(cls):
+        """Clear all user contexts (for shutdown)."""
+        with cls._lock:
+            for ctx in cls._contexts.values():
+                ctx.clear()
+            cls._contexts.clear()
+
+
+# Thread-local storage for current user context
+_current_user_id = threading.local()
+
+
+def set_current_user(user_id: str):
+    """
+    Set the current user ID for the current thread.
+    This should be called at the start of each request/message handling.
+    
+    Args:
+        user_id: Unique identifier for the user
+    """
+    _current_user_id.value = user_id
+
+
+def get_current_user() -> str:
+    """
+    Get the current user ID for the current thread.
+    
+    Returns:
+        User ID or 'anonymous' if not set
+    """
+    return getattr(_current_user_id, 'value', 'anonymous')
+
+
+def get_context(user_id: str = None) -> ORContext:
+    """
+    Get the OR context for a user.
+    
+    Args:
+        user_id: Optional user ID. If not provided, uses current thread's user.
+        
+    Returns:
+        ORContext instance for the user
+    """
+    if user_id is None:
+        user_id = get_current_user()
+    return ORContextManager.get_context(user_id)

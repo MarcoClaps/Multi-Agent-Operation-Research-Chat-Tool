@@ -17,7 +17,11 @@ from Agents.AG_instance_gen import instance_generator_agent
 from Agents.AG_vrptw_solver import vrptw_solver_agent
 from Agents.AG_code_editor import code_editor_agent
 from Agents.AG_visualization import visualization_agent
-from Agents.shared_context import get_context
+from Agents.shared_context import (
+    ORContextManager, 
+    set_current_user, 
+    get_current_user
+)
 
 # Import guardrails
 from Agents.guardrails import topic_guardrail, safety_guardrail, professional_output_guardrail
@@ -64,21 +68,35 @@ Be helpful in explaining optimization concepts like time windows, capacity const
 async def on_chat_start():
     """
     Creates a new SQLite session for the user and saves it in the user session.
-    Also initializes the shared OR context.
+    Also initializes the per-user shared OR context.
     """
-    session = SQLiteSession("conversation_history")
+    # Get the authenticated user or use 'anonymous'
+    user = cl.user_session.get("user")
+    user_id = user.identifier if user else "anonymous"
+    
+    # Store user_id in session for later use
+    cl.user_session.set("user_id", user_id)
+    
+    # Set the current user for this thread (used by agents)
+    set_current_user(user_id)
+    
+    # Create per-user SQLite session for conversation history
+    session = SQLiteSession(f"conversations/{user_id}")
     cl.user_session.set("agent_session", session)
     
-    # Initialize shared context with workspace path
-    ctx = get_context()
+    # Initialize per-user shared context with workspace path
     workspace_path = os.path.join(os.path.dirname(__file__), ".files")
-    ctx.set_workspace(workspace_path)
-    ctx.clear()  # Clear previous session data
+    ORContextManager.set_base_workspace(workspace_path)
+    
+    # Get/create user's context and clear previous session data
+    ctx = ORContextManager.get_context(user_id)
+    ctx.clear()
 
 @cl.on_chat_end
 async def on_chat_end():
     """
     Gets the session back from the user session and closes it. Saves it to the DB.
+    Optionally clears the user's OR context.
     """
     session = cl.user_session.get("agent_session")
     if session is not None:
@@ -86,6 +104,11 @@ async def on_chat_end():
         close_result = session.close()
         if close_result is not None:
             await close_result
+    
+    # Optionally clear user context on chat end
+    # Uncomment if you want to clear context when chat ends:
+    # user_id = cl.user_session.get("user_id", "anonymous")
+    # ORContextManager.clear_context(user_id)
 
 @cl.password_auth_callback
 def auth_callback(username: str, password: str):
@@ -105,8 +128,9 @@ def auth_callback(username: str, password: str):
         os.getenv("CHAINLIT_USERNAME"),
         os.getenv("CHAINLIT_PASSWORD"),
     ):
+        # Use username as identifier for unique user context
         return cl.User(
-            identifier="Student",
+            identifier=username,
             metadata={"role": "student", "provider": "credentials"},
         )
     else:
@@ -122,6 +146,10 @@ async def on_message(message: cl.Message):
         message (cl.Message): The incoming message from the user.
     
     """
+    # Set the current user for this request (thread-local)
+    user_id = cl.user_session.get("user_id", "anonymous")
+    set_current_user(user_id)
+    
     session = cl.user_session.get("agent_session")
 
     try:
